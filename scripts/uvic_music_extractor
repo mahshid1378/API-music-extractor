@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+
+"""
+Script for running the music extractor
+
+Jordie Shier - jshier@uvic.ca
+University of Victoria
+"""
+
+import os
+import sys
+import argparse
+import numpy as np
+from tqdm import tqdm
+
+import uvic_music_extractor.extractors as extractors
+import uvic_music_extractor.utils as utils
+
+
+def main(arguments):
+    """
+    Script entry
+    """
+
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    parser.add_argument('input', help="Input audio or directory", type=str)
+    parser.add_argument('output', help="Output csv file", type=str)
+    parser.add_argument('--rate', '-r', help="Sample rate to run audio feature extraction", type=int, default=44100)
+    parser.add_argument('--normalize', '-n', help="Normalize audio to a specified loudness in LUFS,"
+                                                  "defaults to -24. Pass in no to disable",
+                        default=float(-24.0))
+    args = parser.parse_args(arguments)
+
+    # Check output before starting
+    output = os.path.abspath(args.output)
+
+    # Look for audio files to perform feature extraction on
+    audio_files = utils.get_audio_files(args.input)
+    print("Running feature extraction on {} files at a sampling rate of {}Hz".format(len(audio_files), args.rate))
+
+    # Spectral Features
+    spectral = extractors.Spectral(args.rate)
+    spectral_flux = extractors.SpectralFlux(args.rate)
+    zero_cross_rate = extractors.ZeroCrossingRate(args.rate)
+
+    # Stereo Features
+    stereo_features = extractors.StereoFeatures(args.rate)
+    phase_full = extractors.PhaseCorrelation(args.rate)
+    phase_full.feature_names = ["phase_correlation_full"]
+    phase_1s = extractors.PhaseCorrelation(args.rate, int(args.rate))
+    phase_1s.feature_names = ["phase_correlation_1s"]
+    phase_100ms = extractors.PhaseCorrelation(args.rate, int(args.rate * 0.1))
+    phase_100ms.feature_names = ["phase_correlation_100ms"]
+    stereo_spectrum = extractors.StereoSpectrum(args.rate)
+
+    # Loudness and distortion features
+    loudness = extractors.Loudness(args.rate)
+    dynamic_spread = extractors.DynamicSpread(args.rate)
+    crest_factor_full = extractors.CrestFactor(args.rate)
+    crest_factor_full.feature_names = ["crest_factor_full"]
+    crest_factor_100ms = extractors.CrestFactor(args.rate, int(args.rate * 0.1))
+    crest_factor_100ms.feature_names = ["crest_factor_100ms"]
+    crest_factor_1s = extractors.CrestFactor(args.rate, int(args.rate))
+    crest_factor_1s.feature_names = ["crest_factor_1s"]
+    distortion = extractors.Distortion(args.rate)
+
+    # Loop through all the audio files
+    results = []
+    header = ["filename"]
+    for path in tqdm(audio_files):
+
+        # Load audio
+        samples, channels = utils.load_audio(path, args.rate, mono=False)
+
+        # Normalize loudness if required
+        if not (type(args.normalize) == str and args.normalize.lower() == 'no'):
+            lufs = float(args.normalize)
+            samples = utils.normalize_loudness(samples, args.rate, lufs)
+
+        # Mix to mono and run extraction
+        mono_samples = utils.mix_to_mono(samples)
+        spectral_results = spectral(mono_samples)
+        flux = spectral_flux(mono_samples)
+        zcr = zero_cross_rate(mono_samples)
+        dyn_spread = dynamic_spread(mono_samples)
+        cf_full = crest_factor_full(mono_samples)
+        cf_100ms = crest_factor_100ms(mono_samples)
+        cf_1s = crest_factor_1s(mono_samples)
+        dist = distortion(mono_samples)
+
+        # Stereo Extractors
+        stereo_results = stereo_features(samples)
+        pc_full = phase_full(samples)
+        pc_1s = phase_1s(samples)
+        pc_100ms = phase_100ms(samples)
+        sps = stereo_spectrum(samples)
+        loudness_results = loudness(samples)
+
+        # Save results
+        file_result = [os.path.basename(path)]
+        file_result.extend(spectral_results)
+        file_result.extend(flux)
+        file_result.extend(zcr)
+
+        file_result.extend(stereo_results)
+        file_result.extend(pc_full)
+        file_result.extend(pc_1s)
+        file_result.extend(pc_100ms)
+        file_result.extend(sps)
+
+        file_result.extend(loudness_results)
+        file_result.extend(dyn_spread)
+        file_result.extend(cf_full)
+        file_result.extend(cf_1s)
+        file_result.extend(cf_100ms)
+        file_result.extend(dist)
+        results.append(file_result)
+
+    # Update header
+    header.extend(spectral.get_headers())
+    header.extend(spectral_flux.get_headers())
+    header.extend(zero_cross_rate.get_headers())
+
+    header.extend(stereo_features.get_headers())
+    header.extend(phase_full.get_headers())
+    header.extend(phase_1s.get_headers())
+    header.extend(phase_100ms.get_headers())
+    header.extend(stereo_spectrum.get_headers())
+
+    header.extend(loudness.get_headers())
+    header.extend(dynamic_spread.get_headers())
+    header.extend(crest_factor_full.get_headers())
+    header.extend(crest_factor_1s.get_headers())
+    header.extend(crest_factor_100ms.get_headers())
+    header.extend(distortion.get_headers())
+
+    # Write to csv
+    header_str = ",".join(header)
+    np.savetxt(output, results, fmt="%s", delimiter=",", header=header_str, comments="")
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
